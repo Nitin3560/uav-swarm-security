@@ -122,7 +122,7 @@ class IDS:
 
     def _cusum_update(self, lambdas: dict[AttackClass, float], anomaly_flag_swarm: bool) -> AttackClass:
         for k, lam in lambdas.items():
-            if anomaly_flag_swarm or k in {AttackClass.H2_JAMMING, AttackClass.H3_SPOOF, AttackClass.H4_REPLAY}:
+            if anomaly_flag_swarm:
                 self._g[k] = max(0.0, self._g[k] + float(lam) - self.B_CUSUM.get(k, 1.0))
             else:
                 self._g[k] = max(0.0, self._g[k] - 0.1)

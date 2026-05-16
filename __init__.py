@@ -1,0 +1,1 @@
+"""Standalone paper simulation package."""

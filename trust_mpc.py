@@ -5,7 +5,10 @@ from typing import Any
 import numpy as np
 from scipy.linalg import block_diag
 
-from paper_sim.ids import AttackClass
+try:
+    from paper_sim.ids import AttackClass
+except ModuleNotFoundError:  # pragma: no cover - supports direct local execution
+    from ids import AttackClass
 
 
 try:
@@ -29,6 +32,7 @@ class TrustMPC:
     Q_TRACK = np.diag([10.0, 10.0, 10.0, 1.0, 1.0, 1.0])
     R_INTERV = np.eye(3) * 0.1
     F_FORM = np.diag([6.0, 6.0, 1.0])
+    # Fixed response smoothing used in the reported study.
     SMOOTH_ALPHA = 0.35
 
     def __init__(self, twin: Any, n_agents: int = 4, dt: float = 1.0 / 48.0):
@@ -160,11 +164,12 @@ class TrustMPC:
 
     def _formation_linear_term(self, i: int, refs: np.ndarray, offsets: np.ndarray) -> np.ndarray:
         correction = np.zeros(3, dtype=float)
+        twin_pos = np.array([self.twin.get_state(j)[:3] for j in range(self.n)], dtype=float)
         for j in range(self.n):
             if j == i:
                 continue
             desired_rel = offsets[i] - offsets[j]
-            current_rel = refs[i] - refs[j]
+            current_rel = twin_pos[i] - twin_pos[j]
             correction += self.F_FORM @ (current_rel - desired_rel)
         return correction / max(self.n - 1, 1)
 

@@ -1,138 +1,149 @@
-# Paper Simulation
+# Digital Twin-Assisted UAV Swarm Security Simulation
 
-Standalone research simulation for the failure-aware UAV swarm study.
+This package contains the simulation code for a digital twin-assisted UAV swarm
+security study. The core idea is to run a stochastic digital twin alongside the
+physical swarm and use twin divergence as an intrusion signal for low-altitude
+multi-UAV coordination.
 
-This project intentionally does not reuse the old `case study1` controller or
-fault-handling code. It only borrows the environment backend idea from the
-existing workspace and rebuilds the study logic from scratch.
+The implementation extends the original fault-aware thesis simulation with:
 
-Core comparisons:
+- a Kalman-filter digital twin for each UAV
+- chi-squared normalized innovation detection
+- GLRT-style attack attribution for wind, jamming, spoofing, and replay
+- CUSUM sequential confirmation
+- finite-horizon trust-weighted MPC solved with OSQP
+- attack injection for RF jamming, GPS/broadcast spoofing, replay, and compound wind+jamming
 
-- `pid`
-- `generic`
-- `failure_aware`
+## Threat Model
 
-Core scenarios:
+The physical-fault cases remain part of the study because they are important
+confounders for attack detection:
 
-- `nominal`
-- `wind`
-- `sensor`
-- `comm`
-- `wind_comm`
+- `nominal`: no fault or attack
+- `wind`: correlated physical drift
+- `sensor`: onboard measurement corruption
+- `comm`: degraded communication quality from the thesis setup
+- `wind_comm`: combined thesis fault condition
 
-Main robustness metrics:
+The security-paper scenarios are:
 
-- recovery time
-- degradation percentage
-- peak error spike
+- `jamming_full`: RF link suppression with `jam_power = 1.0`
+- `jamming_partial`: lower-intensity jamming with `jam_power = 0.5`
+- `spoofing_strong`: broadcast spoofing with `d_spoof = [1.5, 0, 0]`
+- `spoofing_subtle`: broadcast spoofing with `d_spoof = [0.5, 0, 0]`
+- `replay`: stale neighbor-state replay with a 5 s delay
+- `compound`: wind plus full jamming
 
-Outputs are written under `paper_sim/outputs`.
+Spoofing corrupts the position broadcast received by neighbors, not the
+spoofed UAV's own sensor measurement. Replay buffers clean pre-attack packets
+and injects stale versions during the attack window.
 
 ## Architecture
 
-- `env.py`: transparent swarm dynamics with direct position/velocity state
+Per control step, the intended data flow is:
+
+```text
+swarm dynamics
+  -> fault injection
+  -> attack injection
+  -> digital twin predict/update
+  -> chi-squared + GLRT + CUSUM IDS
+  -> trust-weighted horizon MPC
+  -> PID tracking of modified references
+  -> next swarm state
+```
+
+Main modules:
+
+- `env.py`: transparent swarm dynamics and state integration
 - `faults.py`: seeded wind, sensor, and communication fault injection
-- `estimation.py`: constant-velocity predictor/corrector used under sensing faults
-- `diagnosis.py`: residual-based fault diagnosis with configurable persistence
-- `controllers.py`: PID baseline, generic supervisor, and diagnosis-driven failure-aware controller
-- `run_study.py`: single-scenario runner with logging, metrics, and ablations
-- `run_matrix.py`: multi-seed orchestration and summary aggregation
+- `attack_injection.py`: jamming, spoofing, and replay attack models
+- `digital_twin.py`: stochastic twin and Kalman innovation statistics
+- `ids.py`: chi-squared detector, GLRT attribution, and CUSUM confirmation
+- `trust_mpc.py`: finite-horizon attack-conditioned MPC supervisor
+- `security_metrics.py`: detection rate, false alarm rate, attribution accuracy, TTD, and disambiguation
+- `run_study.py`: single-scenario runner
+- `run_matrix.py`: multi-seed orchestration and aggregate summaries
 
-## Diagnosis Logic
+## Controllers
 
-The diagnosis layer is deliberately transparent:
+Implemented controller labels:
 
-- sensor confidence rises when measurement innovation/residual stays above threshold for several control steps
-- wind confidence rises when sustained unmodeled tracking drift exceeds a configured threshold
-- communication confidence rises when packet quality drops or stale/missing packets persist
-- hysteresis/persistence counters suppress chattering and smooth recovery
+- `pid`: fixed PID baseline
+- `generic`: legacy thesis supervisory controller
+- `failure_aware`: proposed digital-twin IDS + trust MPC controller
 
-Each control step logs:
+Paper-facing aliases are also accepted:
 
-- active diagnosed fault
-- sensor/wind/comm confidence in `[0, 1]`
+- `pid_baseline -> pid`
+- `prior_supervisory -> generic`
+- `proposed_ids_mpc -> failure_aware`
 
-## Estimator Logic
+Planned external baselines for the paper comparison are not yet implemented in
+this package: threshold-only IDS, CUSUM-only IDS without GLRT attribution, and
+always-on Byzantine-resilient consensus.
 
-Each UAV uses a lightweight constant-velocity estimator:
+## Key Parameters
 
-- predict next position from filtered state and velocity
-- compute innovation from the latest measurement
-- reduce measurement trust as sensor-fault confidence grows
-- gate large outliers
-- fall back to prediction when measurements drop out or freeze
+IDS parameters are fixed in `ids.py`:
 
-This keeps the sensor-fault mitigation mathematically inspectable and publication-friendly.
+- `ALPHA = 0.01`
+- `DF = 3`
+- `RHO = 1e-3`
+- `B_CUSUM[H1_WIND] = 0.8`
+- `B_CUSUM[H2_JAMMING] = 1.5`
+- `B_CUSUM[H3_SPOOF] = 1.2`
+- `B_CUSUM[H4_REPLAY] = 0.6`
 
-## Reconfiguration Rules
+MPC parameters are fixed in `trust_mpc.py`:
 
-The enhanced failure-aware controller responds to diagnosis output:
+- `HORIZON = 5`
+- `DELTA_MAX = 0.30`
+- `SMOOTH_ALPHA = 0.35`
+- terminal cost enters as `Q_TRACK + P_inf` in the final horizon block
 
-- `wind`: increase damping and add drift-canceling bias
-- `sensor`: trust filtered state more, reduce aggressive motion, and reduce noisy consensus coupling
-- `comm`: reduce dependence on unreliable neighbors, hold last valid shared state, and soften consensus coupling
-- `recovery`: blend back toward nominal settings instead of switching abruptly
-
-## New Metrics
-
-In addition to pre/fault/post mean error, the runner now logs:
-
-- RMSE
-- peak error spike
-- recovery time
-- settling time after fault
-- maximum formation deformation
-- inter-UAV spacing violation count
-- time above safety threshold
-- total control effort
-- stable-run indicator
-- diagnosis confidences and estimator innovation statistics
-
-`run_matrix.py` aggregates means, standard deviations, and 95% confidence intervals across seeds.
-
-## Ablation Modes
-
-Failure-aware runs support:
-
-- `full`
-- `no_diagnosis`
-- `no_filter`
-- `no_comm_fallback`
-- `no_wind_comp`
-- `no_recovery_schedule`
+`SMOOTH_ALPHA` is a conservative response smoother. It damps rapid MPC changes,
+which helps sustained attacks but can slow response and release under brief or
+intermittent attacks.
 
 ## Example Commands
 
-Baseline study:
-
-```bash
-python -m paper_sim.run_matrix \
-  --config /Users/nitin/Desktop/failure/paper_sim/configs/base.yaml \
-  --scenarios nominal wind sensor comm \
-  --controllers pid generic failure_aware \
-  --seeds 1 2 3 4 5 6 7 8 9 10 \
-  --output-root /Users/nitin/Desktop/failure/paper_sim/outputs_study
-```
-
-Single upgraded run:
+Single proposed security run:
 
 ```bash
 python -m paper_sim.run_study \
   --config /Users/nitin/Desktop/failure/paper_sim/configs/base.yaml \
-  --scenario sensor \
-  --controller failure_aware \
+  --scenario spoofing_subtle \
+  --controller proposed_ids_mpc \
   --seed 1 \
   --output-root /Users/nitin/Desktop/failure/paper_sim/outputs_example
 ```
 
-Ablation study:
+Full 30-seed security matrix used for the current results:
 
 ```bash
 python -m paper_sim.run_matrix \
   --config /Users/nitin/Desktop/failure/paper_sim/configs/base.yaml \
-  --scenarios sensor comm \
-  --controllers failure_aware \
-  --ablations full no_diagnosis no_filter no_comm_fallback no_wind_comp no_recovery_schedule \
-  --seeds 1 2 3 4 5 \
-  --output-root /Users/nitin/Desktop/failure/paper_sim/outputs_ablation
+  --scenarios nominal wind sensor jamming_full jamming_partial spoofing_strong spoofing_subtle replay compound \
+  --controllers pid_baseline prior_supervisory proposed_ids_mpc \
+  --seeds 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 \
+  --output-root /Users/nitin/Desktop/failure/paper_sim/results_security_30seed
 ```
+
+Aggregate outputs are written under the chosen output root. The current full
+matrix summaries are:
+
+- `results_security_30seed/combined_concise_summary.csv`
+- `results_security_30seed/combined_aggregate_summary.csv`
+
+## Interpretation Notes
+
+The proposed controller is strongest when the attack affects shared coordination
+signals, such as spoofing, replay, and jamming. Sensor corruption is the hard
+case: the twin's measurement update is itself corrupted, so the twin degrades
+along with the onboard sensor. This is an expected limitation and should be
+reported honestly in the paper discussion.
+
+Under `H0_NONE`, the trust MPC intentionally returns zero reference correction.
+Any nominal improvement should therefore be attributed to the broader supervisor
+and estimator behavior, not to attack-mode MPC intervention.
