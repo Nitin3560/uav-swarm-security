@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pkl
+.DS_Store
+outputs_*/
+results_ablation_*/
+results_best_*/
+results_candidate_*/
+results_check_*/
+results_current_*/
+results_diag_*/
+results_final_*/
+results_option_*/
+results_pdf_*/
+results_sensor_*/
+results_wind_*/
