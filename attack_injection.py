@@ -40,6 +40,7 @@ def inject_jamming(
     end_t: float = 30.0,
     jam_power: float = 1.0,
     n_agents: int = 4,
+    run_seed: int = 0,
 ) -> tuple[NeighborStates, dict[int, float]]:
     """Drop inter-agent messages for targeted receivers during the attack window."""
     if not (start_t <= t < end_t):
@@ -48,7 +49,10 @@ def inject_jamming(
     ns = _copy_neighbor_states(neighbor_states)
     qc = dict(qcomm)
     ids = range(n_agents) if agent_ids == "all" else agent_ids
-    rng = np.random.default_rng(seed=int(t * 1000) % (2**31 - 1))
+    # Include the outer simulation seed so Monte Carlo jamming runs differ
+    # across seeds instead of replaying the same drop pattern every run.
+    rng_seed = (int(t * 1000) + 1000003 * int(run_seed)) % (2**31 - 1)
+    rng = np.random.default_rng(seed=rng_seed)
     drop_prob = float(np.clip(jam_power, 0.0, 1.0))
 
     for i in ids:

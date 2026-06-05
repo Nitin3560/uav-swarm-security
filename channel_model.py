@@ -58,6 +58,12 @@ class ChannelModel:
     per_snr_threshold_db : float SNR below which PER > 0.5 (default 5)
     per_snr_slope : float   Steepness of PER curve (default 2.0)
     rng_seed : int          Seed for shadowing realisation (default 42)
+    default_jammer_offset_m : float
+        Distance of the default jammer from the swarm centroid when no explicit
+        jammer position is supplied (default 10 m). This avoids placing the
+        jammer unrealistically inside the swarm.
+    shadowing_update_period_s : float
+        Shadowing coherence/update period in seconds (default 1 s).
     """
 
     def __init__(self, cfg: dict[str, Any] | None = None):
@@ -73,7 +79,10 @@ class ChannelModel:
         self.shadowing_std_db = float(c.get("shadowing_std_db", 2.0))
         self.per_snr_threshold_db = float(c.get("per_snr_threshold_db", 5.0))
         self.per_snr_slope = float(c.get("per_snr_slope", 2.0))
+        self.default_jammer_offset_m = float(c.get("default_jammer_offset_m", 10.0))
+        self.shadowing_update_period_s = float(c.get("shadowing_update_period_s", 1.0))
         self.rng = np.random.default_rng(int(c.get("rng_seed", 42)))
+        self._shadow_cache: dict[tuple[int, int, int], float] = {}
 
         # Derived constants
         # Thermal noise power: kTB  (k=1.38e-23, T=290 K, B in Hz)
@@ -186,8 +195,9 @@ class ChannelModel:
         d = max(d, self.d0_m * 0.01)  # avoid log(0)
         # Log-distance path loss
         pl_db = self._fspl_d0_db + 10.0 * self.path_loss_exp * np.log10(d / self.d0_m)
-        # Log-normal shadowing (slow-fading; resample infrequently in real use)
-        shadowing = float(self.rng.normal(0.0, self.shadowing_std_db))
+        # Log-normal shadowing is slow-fading. Cache a shadowing draw per link
+        # and coherence interval instead of resampling at the control rate.
+        shadowing = self._shadowing_db(tx_pos, rx_pos, t)
         rx_dbm = (
             self.tx_power_dbm
             + self.tx_gain_dbi
@@ -207,10 +217,14 @@ class ChannelModel:
         """Noise floor raised by jammer interference."""
         if not jam_active or jam_power_w <= 0.0:
             return self._noise_floor_dbm
-        # Jammer at centroid if no explicit position given
-        centroid = np.mean(positions, axis=0) if jam_pos is None else np.asarray(jam_pos)
+        swarm_centroid = np.mean(positions, axis=0)
+        if jam_pos is None:
+            # Default jammer sits outside the formation, not at the centroid.
+            centroid = swarm_centroid + np.array([self.default_jammer_offset_m, 0.0, 0.0])
+        else:
+            centroid = np.asarray(jam_pos, dtype=float)
         # Jammer distance from swarm centroid
-        d_jam = float(np.linalg.norm(centroid - np.mean(positions, axis=0)))
+        d_jam = float(np.linalg.norm(centroid - swarm_centroid))
         d_jam = max(d_jam, 0.5)
         # Jammer received power at swarm (simplified isotropic, d_jam path loss)
         jam_dbm = 10.0 * np.log10(jam_power_w * 1e3)  # W → dBm
@@ -223,6 +237,19 @@ class ChannelModel:
         jam_mw = 10 ** (jam_rx_dbm / 10.0)
         total_mw = noise_mw + jam_mw
         return float(10.0 * np.log10(total_mw))
+
+    def _shadowing_db(self, tx_pos: np.ndarray, rx_pos: np.ndarray, t: float) -> float:
+        if self.shadowing_std_db <= 0.0:
+            return 0.0
+        period = max(self.shadowing_update_period_s, 1e-9)
+        bucket = int(np.floor(float(t) / period))
+        # Use rounded positions only to create a stable approximate link key.
+        tx_key = int(round(float(tx_pos[0]) * 10.0)) ^ (int(round(float(tx_pos[1]) * 10.0)) << 8)
+        rx_key = int(round(float(rx_pos[0]) * 10.0)) ^ (int(round(float(rx_pos[1]) * 10.0)) << 8)
+        key = (bucket, tx_key, rx_key)
+        if key not in self._shadow_cache:
+            self._shadow_cache[key] = float(self.rng.normal(0.0, self.shadowing_std_db))
+        return self._shadow_cache[key]
 
     def _per_matrix(
         self,

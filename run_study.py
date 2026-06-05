@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from paper_sim.controllers import FailureAwareSupervisor, GenericSupervisor, PositionPID
+from paper_sim.controllers import FailureAwareSupervisor, GenericSupervisor, PositionPID, SupervisorCommand
 from paper_sim.attack_injection import (
     buffer_neighbor_states,
     inject_jamming,
@@ -141,7 +141,7 @@ def run_once(cfg: dict, scenario: str, controller_name: str, seed: int, output_r
     condition_spec = CONDITION_SPECS[scenario]
     fault_scenario = str(condition_spec["fault_scenario"])
     attack_type = condition_spec.get("attack")
-    env_handles = make_env(cfg)
+    env_handles = make_env(cfg, gui=False)
     swarm = env_handles.env
     num = int(cfg["sim"]["num_drones"])
     ctrl_decim = max(1, int(round(env_handles.dt_ctrl / env_handles.dt_sim)))
@@ -205,6 +205,8 @@ def run_once(cfg: dict, scenario: str, controller_name: str, seed: int, output_r
 
     rows: list[dict] = []
     accel_cmd = np.zeros((num, 3), dtype=float)
+    target_pos_cmd = swarm.positions.copy()
+    target_vel_cmd = np.zeros((num, 3), dtype=float)
     active_wind = np.zeros((num, 3), dtype=float)
     pre0, pre1 = cfg["analysis"]["pre_fault_window_s"]
     fault0, fault1 = cfg["analysis"]["fault_window_s"]
@@ -319,6 +321,7 @@ def run_once(cfg: dict, scenario: str, controller_name: str, seed: int, output_r
                     end_t=float(fault1),
                     jam_power=float(condition_spec.get("jam_power", jam_cfg.get("jam_power", 1.0))),
                     n_agents=num,
+                    run_seed=seed,
                 )
             elif attack_type == "replay":
                 replay_cfg = attack_cfg.get("replay", {})
@@ -346,9 +349,13 @@ def run_once(cfg: dict, scenario: str, controller_name: str, seed: int, output_r
             elif controller_name == "generic":
                 sup = generic.step(mean_err_nominal, form_err_nominal)
             else:
-                sup = failure_aware.step(diagnosis, group_error_xy, ablation=ablation)
+                if cfg.get("sim", {}).get("backend") == "pybullet_drones":
+                    sup = SupervisorCommand()
+                else:
+                    sup = failure_aware.step(diagnosis, group_error_xy, ablation=ablation)
 
             references_cmd = np.zeros_like(pos_true)
+            target_vel_cmd = np.zeros_like(pos_true)
             effective_offsets = offsets_nominal * sup.formation_scale
             trust_delta = trust_mpc.step(references_nominal, effective_offsets, ids_out, neighbor_states, t_s)
             delta_norms = {idx: float(np.linalg.norm(trust_delta[idx])) for idx in range(num)}
@@ -425,6 +432,8 @@ def run_once(cfg: dict, scenario: str, controller_name: str, seed: int, output_r
                     target_pos += trust_delta[i]
 
                 references_cmd[i] = target_pos
+                target_pos_cmd[i] = target_pos
+                target_vel_cmd[i] = ref_vel * sup.speed_scale
                 observed_accel = (vel_true[i] - prev_true_vel[i]) / env_handles.dt_ctrl
                 dob_residual = observed_accel - accel_cmd[i]
                 disturbance_est[i] = (
@@ -556,7 +565,7 @@ def run_once(cfg: dict, scenario: str, controller_name: str, seed: int, output_r
             )
             last_disturbance_norm = float(np.mean([np.linalg.norm(disturbance_est[j][:2]) for j in range(num)]))
 
-        swarm.step(accel_cmd, active_wind)
+        swarm.step(target_pos_cmd, active_wind, target_vel_cmd)
 
     df = pd.DataFrame(rows)
     pre_mean = window_mean(df, float(pre0), float(pre1), "mean_err_nominal_m")

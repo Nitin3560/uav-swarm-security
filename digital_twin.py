@@ -83,7 +83,8 @@ class DigitalTwin:
                 gain = self.P_prior[i] @ self.H.T @ np.linalg.pinv(self.S[i])
             self.x_hat[i] = self.x_prior[i] + gain @ self.gamma[i]
             ident = np.eye(self.nx)
-            self.P[i] = (ident - gain @ self.H) @ self.P_prior[i]
+            ikh = ident - gain @ self.H
+            self.P[i] = ikh @ self.P_prior[i] @ ikh.T + gain @ self.R @ gain.T
 
     def get_state(self, i: int) -> np.ndarray:
         return self.x_hat[int(i)].copy()

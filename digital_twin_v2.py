@@ -59,7 +59,8 @@ class DigitalTwin:
         Default True.
     sensor_gate_alpha : float
         False-rejection rate for the gate chi-squared test.
-        Default 0.001 (0.1% false rejection under H0).
+        Default 0.01 (1% false rejection under H0), aligned with the IDS NIS
+        threshold so the twin and IDS use the same nominal innovation boundary.
     """
 
     def __init__(
@@ -70,7 +71,7 @@ class DigitalTwin:
         sigma_v: float = 0.05,
         sigma_meas: float = 0.02,
         sensor_gate: bool = True,
-        sensor_gate_alpha: float = 0.001,
+        sensor_gate_alpha: float = 0.01,
     ):
         self.n = int(n_agents)
         self.dt = float(dt)
@@ -192,7 +193,8 @@ class DigitalTwin:
                 gain = self.P_prior[i] @ self.H.T @ np.linalg.pinv(S_i)
             self.x_hat[i] = self.x_prior[i] + gain @ self.gamma[i]
             ident = np.eye(self.nx)
-            self.P[i] = (ident - gain @ self.H) @ self.P_prior[i]
+            ikh = ident - gain @ self.H
+            self.P[i] = ikh @ self.P_prior[i] @ ikh.T + gain @ self.R @ gain.T
 
     # ------------------------------------------------------------------
     # Getters (identical interface to original)

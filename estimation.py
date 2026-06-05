@@ -96,7 +96,10 @@ class ConstantVelocityEstimator:
             if not measurement_accepted:
                 meas_gain = 0.0
             else:
-                meas_gain = self.base_gain * trust_scale * (1.0 - sensor_confidence)
+                # Higher sensor confidence should increase measurement trust.
+                # The previous inverse relation made nominal sensors ignored
+                # and low-confidence sensors trusted most strongly.
+                meas_gain = self.base_gain * trust_scale * sensor_confidence
                 meas_gain = float(np.clip(meas_gain, self.min_gain, self.max_gain))
         filtered_pos = predicted_pos + meas_gain * innovation
         filtered_vel = predicted_vel + (meas_gain / max(self.dt, 1e-9)) * innovation

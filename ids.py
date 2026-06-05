@@ -123,9 +123,13 @@ class IDS:
     def _cusum_update(self, lambdas: dict[AttackClass, float], anomaly_flag_swarm: bool) -> AttackClass:
         for k, lam in lambdas.items():
             if anomaly_flag_swarm:
-                self._g[k] = max(0.0, self._g[k] + float(lam) - self.B_CUSUM.get(k, 1.0))
+                updated = max(0.0, self._g[k] + float(lam) - self.B_CUSUM.get(k, 1.0))
+                self._g[k] = min(updated, self._h.get(k, 1e9) + 1.0)
             else:
-                self._g[k] = max(0.0, self._g[k] - 0.1)
+                # Standard one-sided/Page CUSUM: without anomaly evidence,
+                # do not integrate class likelihoods. The max(0, ·) reset is
+                # already applied in the anomalous branch.
+                self._g[k] = 0.0
         confirmed = [k for k in lambdas if self._g[k] > self._h.get(k, 1e9)]
         if not confirmed:
             return AttackClass.H0_NONE

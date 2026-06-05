@@ -215,7 +215,7 @@ def run_once(
 
     twin_cfg = cfg.get("security", {}).get("digital_twin", {})
     # Extension 1: use DigitalTwin v2 with sensor integrity gate
-    sensor_gate_alpha = float(twin_cfg.get("sensor_gate_alpha", 0.001))
+    sensor_gate_alpha = float(twin_cfg.get("sensor_gate_alpha", 0.01))
     sensor_gate_on    = bool(twin_cfg.get("sensor_gate", True))
     twin = DigitalTwin(
         n_agents=num,
@@ -361,7 +361,16 @@ def run_once(
                 nis_values.append(snapshot.nis)
                 accept_flags.append(float(snapshot.measurement_accepted))
                 bias_norms.append(float(np.linalg.norm(snapshot.bias_estimate_xy)))
-                if controller_name == "failure_aware" and ablation != "no_filter":
+                use_filtered_state = (
+                    controller_name == "failure_aware"
+                    and ablation != "no_filter"
+                    and (
+                        diagnosis.active_fault == "sensor"
+                        or diagnosis.confidences.sensor >= 0.5
+                        or measurement is None
+                    )
+                )
+                if use_filtered_state:
                     measured_or_estimated[i] = snapshot.filtered_pos
                     estimated_vel_array[i]   = snapshot.filtered_vel
                 else:
@@ -404,6 +413,7 @@ def run_once(
                     start_t=float(fault0), end_t=float(fault1),
                     jam_power=float(condition_spec.get("jam_power", jm.get("jam_power", 1.0))),
                     n_agents=num,
+                    run_seed=seed,
                 )
             elif attack_type == "replay":
                 rp = attack_cfg_sec.get("replay", {})
@@ -449,7 +459,7 @@ def run_once(
             elif controller_name == "generic":
                 sup = generic.step(mean_err_nominal, form_err_nominal)
             else:
-                if cfg.get("sim", {}).get("backend") == "pybullet_drones":
+                if cfg.get("sim", {}).get("backend", "pybullet_drones") == "pybullet_drones":
                     sup = SupervisorCommand()
                 else:
                     sup = failure_aware.step(diagnosis, group_error_xy, ablation=ablation)
@@ -465,6 +475,48 @@ def run_once(
                 trust_delta = trust_mpc.step(
                     references_nominal, effective_offsets, ids_out, neighbor_states, t_s
                 )
+            if isinstance(trust_delta, dict):
+                trust_delta = np.vstack(
+                    [np.asarray(trust_delta.get(idx, np.zeros(3)), dtype=float) for idx in range(num)]
+                )
+            else:
+                trust_delta = np.asarray(trust_delta, dtype=float)
+
+            k_hat = ids_out["k_hat"]
+            mpc_cfg = cfg.get("security", {}).get("mpc_response", {})
+            response_err_gate = float(mpc_cfg.get("tracking_error_gate_m", 0.05))
+            response_form_gate = float(mpc_cfg.get("formation_error_gate_m", 0.05))
+            small_delta_limit = float(mpc_cfg.get("small_delta_limit_m", 0.04))
+            response_scales = {
+                AttackClass.H2_JAMMING: float(mpc_cfg.get("jamming_scale", 0.10)),
+                AttackClass.H3_SPOOF: float(mpc_cfg.get("spoofing_scale", 0.75)),
+                AttackClass.H4_REPLAY: float(mpc_cfg.get("replay_scale", 1.00)),
+            }
+            apply_mpc_response = (
+                controller_name == "failure_aware"
+                and attack_type in {"jamming", "spoofing", "replay"}
+                and k_hat != AttackClass.H0_NONE
+                and (
+                    k_hat == AttackClass.H4_REPLAY
+                    or mean_err_nominal > response_err_gate
+                    or form_err_nominal > response_form_gate
+                )
+            )
+            if apply_mpc_response:
+                trust_delta = trust_delta * response_scales.get(k_hat, 0.0)
+                for d_idx in range(num):
+                    delta_norm = float(np.linalg.norm(trust_delta[d_idx]))
+                    if delta_norm > small_delta_limit:
+                        trust_delta[d_idx] *= small_delta_limit / (delta_norm + 1e-9)
+            else:
+                trust_delta = np.zeros_like(trust_delta)
+            use_attack_aware_consensus = (
+                apply_mpc_response
+                or (
+                    controller_name == "failure_aware"
+                    and k_hat in {AttackClass.H3_SPOOF, AttackClass.H4_REPLAY}
+                )
+            )
 
             delta_norms = {idx: float(np.linalg.norm(trust_delta[idx])) for idx in range(num)}
 
@@ -502,12 +554,12 @@ def run_once(
                     neighbor_view = measured_or_estimated[j].copy()
                     if attack_type in {"jamming", "spoofing", "replay"}:
                         state = neighbor_states.get(i, {}).get(j)
-                        if controller_name == "failure_aware" and ids_out["k_hat"] != AttackClass.H0_NONE:
+                        if use_attack_aware_consensus:
                             comm_health_samples.append(float(qcomm.get(i, 1.0)))
                             neighbor_view = twin.get_state(j)[:3]
                         elif state is None:
                             comm_health_samples.append(0.0)
-                            if controller_name == "failure_aware" and ablation != "no_comm_fallback":
+                            if use_attack_aware_consensus and ablation != "no_comm_fallback":
                                 neighbor_view = filtered_pos[j].copy()
                             else:
                                 continue
@@ -535,7 +587,7 @@ def run_once(
 
                 if consensus_count > 0:
                     target_pos[:2] += formation_gain * sup.consensus_scale * consensus_sum / consensus_count
-                if controller_name == "failure_aware" and attack_type in {"jamming", "spoofing", "replay"}:
+                if apply_mpc_response:
                     target_pos += trust_delta[i]
 
                 references_cmd[i] = target_pos
@@ -549,7 +601,13 @@ def run_once(
                     + (1.0 - float(dob_cfg["lpf_alpha"])) * dob_residual
                 )
                 disturbance_ff = np.zeros(3, dtype=float)
-                if controller_name == "failure_aware" and diagnosis.active_fault == "wind" and ablation != "no_wind_comp":
+                apply_wind_ff = (
+                    controller_name == "failure_aware"
+                    and diagnosis.active_fault == "wind"
+                    and ablation != "no_wind_comp"
+                    and mean_err_nominal > float(mpc_cfg.get("wind_ff_error_gate_m", 0.02))
+                )
+                if apply_wind_ff:
                     disturbance_ff = -float(dob_cfg["ff_gain"]) * disturbance_est[i]
                     ff_norm = np.linalg.norm(disturbance_ff[:2])
                     ff_cap  = float(dob_cfg["ff_limit_xy"])
@@ -651,7 +709,9 @@ def run_once(
                 # --- debug ---
                 "debug_qcomm_mean":        float(np.mean(list(qcomm.values()))) if qcomm else 1.0,
                 "debug_mpc_mode":          getattr(trust_mpc, "_last_mode", "nominal"),
+                "debug_mpc_applied":       float(apply_mpc_response),
                 "debug_delta_norm_0":      delta_norms.get(0, 0.0),
+                "debug_wind_ff_applied":   float(apply_wind_ff),
             }
             rows.append(row)
 
