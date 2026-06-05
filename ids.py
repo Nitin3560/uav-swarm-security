@@ -126,10 +126,10 @@ class IDS:
                 updated = max(0.0, self._g[k] + float(lam) - self.B_CUSUM.get(k, 1.0))
                 self._g[k] = min(updated, self._h.get(k, 1e9) + 1.0)
             else:
-                # Standard one-sided/Page CUSUM: without anomaly evidence,
-                # do not integrate class likelihoods. The max(0, ·) reset is
-                # already applied in the anomalous branch.
-                self._g[k] = 0.0
+                # No new anomaly evidence: hold the accumulated statistic.
+                # The drift subtraction in the anomalous branch already keeps
+                # weak evidence from growing without support.
+                pass
         confirmed = [k for k in lambdas if self._g[k] > self._h.get(k, 1e9)]
         if not confirmed:
             return AttackClass.H0_NONE

@@ -91,8 +91,8 @@ class DigitalTwin:
         if _chi2_dist is not None:
             self.tau_gate = float(_chi2_dist.ppf(1.0 - sensor_gate_alpha, df=self.nz))
         else:
-            # Fallback: chi2(df=3, alpha=0.001) ≈ 16.27
-            self.tau_gate = 16.27
+            # Fallback: chi2(df=3, alpha=0.01) ≈ 11.345
+            self.tau_gate = 11.345
 
         self.x_hat = {i: np.zeros(6, dtype=float) for i in range(self.n)}
         self.P = {i: np.eye(6, dtype=float) * 0.1 for i in range(self.n)}
