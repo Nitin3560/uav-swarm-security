@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - deterministic fallback below
 class TrustMPC:
     """Finite-horizon, attack-conditioned reference MPC for the supervisory layer."""
 
-    DELTA_MAX = 0.30
+    DELTA_MAX = 0.05
     ETA = 2.0
     KAPPA = 0.5
     HORIZON = 5
@@ -33,7 +33,7 @@ class TrustMPC:
     R_INTERV = np.eye(3) * 0.1
     F_FORM = np.diag([6.0, 6.0, 1.0])
     # Fixed response smoothing used in the reported study.
-    SMOOTH_ALPHA = 0.35
+    SMOOTH_ALPHA = 0.20
 
     def __init__(self, twin: Any, n_agents: int = 4, dt: float = 1.0 / 48.0):
         self.twin = twin
@@ -48,6 +48,7 @@ class TrustMPC:
         zero3 = np.zeros((3, 3))
         self.A = np.block([[eye3, self.dt * eye3], [zero3, eye3]])
         self.B = np.block([[0.5 * self.dt**2 * eye3], [self.dt * eye3]])
+        self.H = np.block([eye3, zero3])
 
         self.Phi, self.Gamma = self._build_prediction_matrices()
         q_blocks = [self.Q_TRACK] * (self.T - 1) + [self.Q_TRACK + self.P_inf]
@@ -134,7 +135,7 @@ class TrustMPC:
         mode = "nominal"
 
         if k_hat == AttackClass.H2_JAMMING:
-            target = twin_pos.copy()
+            target = refs.copy()
             mode = "jamming_silent"
         elif k_hat == AttackClass.H3_SPOOF:
             trust = self._trust_weights(ids_out)
@@ -163,15 +164,21 @@ class TrustMPC:
         return horizon
 
     def _formation_linear_term(self, i: int, refs: np.ndarray, offsets: np.ndarray) -> np.ndarray:
-        correction = np.zeros(3, dtype=float)
-        twin_pos = np.array([self.twin.get_state(j)[:3] for j in range(self.n)], dtype=float)
+        """Gradient of the full-horizon formation cost with respect to U_i."""
+        x0_i = self.twin.get_state(i)
+        f_vec = np.zeros(self.T * self.nu, dtype=float)
         for j in range(self.n):
             if j == i:
                 continue
+            x0_j = self.twin.get_state(j)
             desired_rel = offsets[i] - offsets[j]
-            current_rel = twin_pos[i] - twin_pos[j]
-            correction += self.F_FORM @ (current_rel - desired_rel)
-        return correction / max(self.n - 1, 1)
+            for tau in range(self.T):
+                row = slice(tau * self.nx, (tau + 1) * self.nx)
+                gamma_tau = self.Gamma[row, :]
+                x_diff_free = self.Phi[row, :] @ (x0_i - x0_j)
+                e_tau = self.H @ x_diff_free - desired_rel
+                f_vec += gamma_tau.T @ self.H.T @ self.F_FORM @ e_tau
+        return (2.0 / max(self.n - 1, 1)) * f_vec
 
     def _project_horizon(self, u_vec: np.ndarray) -> np.ndarray:
         out = np.asarray(u_vec, dtype=float).copy()
@@ -190,7 +197,7 @@ class TrustMPC:
             x_pred_free = self.Phi @ x0
             error = x_pred_free - x_ref_horizon
             linear = 2.0 * self.Gamma.T @ self.Q_bar @ error
-            linear[:3] += 2.0 * self._formation_linear_term(i, refs, offsets)
+            linear += self._formation_linear_term(i, refs, offsets)
 
             u_opt: np.ndarray
             if _USE_OSQP and i in self._osqp_solvers:
