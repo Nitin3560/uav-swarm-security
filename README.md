@@ -98,8 +98,8 @@ IDS parameters are fixed in `ids.py`:
 MPC parameters are fixed in `trust_mpc.py`:
 
 - `HORIZON = 5`
-- `DELTA_MAX = 0.30`
-- `SMOOTH_ALPHA = 0.35`
+- `DELTA_MAX = 0.05`
+- `SMOOTH_ALPHA = 0.20`
 - terminal cost enters as `Q_TRACK + P_inf` in the final horizon block
 
 `SMOOTH_ALPHA` is a conservative response smoother. It damps rapid MPC changes,
