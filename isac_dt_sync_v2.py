@@ -450,7 +450,7 @@ def print_summary(mc, scenario_label):
 
 # ─── Main ─────────────────────────────────────────────────────────
 def main():
-    out=Path("/home/claude/dt_sync_out_v2"); out.mkdir(exist_ok=True)
+    out=Path("dt_sync_out_v2"); out.mkdir(exist_ok=True)
 
     print("Computing tr(P_nominal) for each filter mode...")
     trP_good =tr_P_nominal_from_warmup('good')
