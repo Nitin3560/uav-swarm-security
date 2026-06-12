@@ -48,6 +48,7 @@ from isac_dt_sync_v2 import (
     TAU_EVENT,
     COLORS,
     LABELS,
+    Q_MIN,
 )
 
 METHODS = ["proposed", "periodic", "event", "unconditional"]
@@ -86,6 +87,8 @@ def run_one_stream(
     tau_high: float = 100.0,
     t_period: int = T_PERIOD,
     tau_event: float = TAU_EVENT,
+    seed: int = 0,
+    quality_noise: float = 0.10,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     stream, dt = load_aerpaw_stream(csv_path)
     tr_pnom = radar_nominal_trace(stream, dt, floor_sigma_m)
@@ -95,7 +98,9 @@ def run_one_stream(
     gt_pos = stream[["gt_x", "gt_y", "gt_z"]].to_numpy(float)
     gt_vel = np.gradient(gt_pos, dt, axis=0)
     true_state = np.hstack([gt_pos, gt_vel])
-    q = quality_from_sinr(stream["sinr_db"].fillna(stream["sinr_db"].median()).to_numpy(float))
+    q_true = quality_from_sinr(stream["sinr_db"].fillna(stream["sinr_db"].median()).to_numpy(float))
+    rng = np.random.default_rng(seed + 3000)
+    q = np.clip(q_true * (1.0 + rng.normal(0.0, quality_noise, len(q_true))), Q_MIN, 1.0)
     r_mats = [np.diag([row.r_xx, row.r_yy, row.r_zz]) for row in stream.itertuples()]
 
     K_lqr, Q_lqg, R_lqg = build_lqr(dt)
@@ -179,6 +184,7 @@ def run_one_stream(
             lqg_cost[m] += float(ex @ Q_lqg @ ex + eu @ R_lqg @ eu)
             records.append({
                 "flight": flight,
+                "seed": seed,
                 "k": k,
                 "t": float(stream["t"].iloc[k]) if "t" in stream else k * dt,
                 "method": m,
@@ -189,6 +195,7 @@ def run_one_stream(
                 "Dk": Dk,
                 "Dr": Dr,
                 "q": float(q[k]),
+                "q_true": float(q_true[k]),
                 "sinr_db": float(stream["sinr_db"].iloc[k]),
                 "assoc_error_m": float(stream["assoc_error_m"].iloc[k]),
             })
@@ -199,6 +206,7 @@ def run_one_stream(
         sub = ts[ts["method"] == m]
         rows.append({
             "flight": flight,
+            "seed": seed,
             "method": m,
             "rmse_twin": float(np.sqrt(np.mean(sub["twin_err"] ** 2))),
             "mean_aoi": float(sub["aoi"].mean()),
@@ -250,6 +258,10 @@ def main() -> None:
     parser.add_argument("--floor-sigma-m", type=float, default=DEFAULT_SIGMA_M)
     parser.add_argument("--tau-low", type=float, default=20.0)
     parser.add_argument("--tau-high", type=float, default=100.0)
+    parser.add_argument("--seeds", type=int, default=1,
+                        help="Monte Carlo seeds for q_k estimation noise")
+    parser.add_argument("--quality-noise", type=float, default=0.10,
+                        help="Relative sensing-quality estimation noise")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -258,20 +270,30 @@ def main() -> None:
     all_ts = []
     for inp in args.inputs:
         path = Path(inp)
-        print(f"Running AERPAW DT sync: {path}")
-        summary, ts = run_one_stream(
-            path,
-            floor_sigma_m=args.floor_sigma_m,
-            tau_low=args.tau_low,
-            tau_high=args.tau_high,
-        )
+        print(f"Running AERPAW DT sync: {path} ({args.seeds} seeds)")
+        per_flight_summary = []
+        per_flight_ts = []
+        for seed in range(args.seeds):
+            summary, ts = run_one_stream(
+                path,
+                floor_sigma_m=args.floor_sigma_m,
+                tau_low=args.tau_low,
+                tau_high=args.tau_high,
+                seed=seed,
+                quality_noise=args.quality_noise,
+            )
+            per_flight_summary.append(summary)
+            per_flight_ts.append(ts)
+        summary = pd.concat(per_flight_summary, ignore_index=True)
+        ts = pd.concat(per_flight_ts, ignore_index=True)
         flight = str(summary["flight"].iloc[0])
         summary.to_csv(out_dir / f"{flight}_dt_sync_summary.csv", index=False)
         ts.to_csv(out_dir / f"{flight}_dt_sync_timeseries.csv", index=False)
         all_summary.append(summary)
         all_ts.append(ts)
-        prop = summary[summary["method"] == "proposed"].iloc[0]
-        periodic = summary[summary["method"] == "periodic"].iloc[0]
+        mean_summary = summary.groupby("method", as_index=False).mean(numeric_only=True)
+        prop = mean_summary[mean_summary["method"] == "proposed"].iloc[0]
+        periodic = mean_summary[mean_summary["method"] == "periodic"].iloc[0]
         rmse_gain = (periodic.rmse_twin - prop.rmse_twin) / periodic.rmse_twin * 100
         sync_red = (periodic.sync_count - prop.sync_count) / periodic.sync_count * 100 if periodic.sync_count > 0 else 0.0
         print(f"  {flight}: RMSE {rmse_gain:.1f}% vs periodic | full-sync {sync_red:.1f}% vs periodic")
@@ -280,9 +302,12 @@ def main() -> None:
     combined_ts = pd.concat(all_ts, ignore_index=True)
     combined.to_csv(out_dir / "aerpaw_dt_sync_summary.csv", index=False)
     combined_ts.to_csv(out_dir / "aerpaw_dt_sync_timeseries.csv", index=False)
-    plot_aerpaw_summary(combined, out_dir)
+    plot_aerpaw_summary(
+        combined.groupby(["flight", "method"], as_index=False).mean(numeric_only=True),
+        out_dir,
+    )
     print("\nCombined summary:")
-    print(combined.to_string(index=False))
+    print(combined.groupby(["flight", "method"], as_index=False).mean(numeric_only=True).to_string(index=False))
     print(f"\nAll outputs -> {out_dir}")
 
 
