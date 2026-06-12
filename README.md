@@ -157,24 +157,31 @@ state estimate, covariance, and sensing-quality indicator. The policy then
 chooses among `HOLD`, `FUSE`, and `SYNC` actions to balance twin freshness,
 tracking error, and communication load.
 
-Current real-dataset validation outputs are stored in:
+Current strict Option-B validation outputs are stored in:
 
-- `paper3_real_dataset_results_30seed/paper3_real_dataset_results_30seed_20260612.csv`
-- `paper3_real_dataset_results_30seed/paper3_real_dataset_summary_30seed_20260612.csv`
-- `paper3_real_dataset_results_30seed/paper3_real_dataset_results_30seed.png`
-- `dt_sync_v3_30seed_seq20_seq32_seq33_means.csv`
-- `dt_sync_aerpaw_30seed_summary_means.csv`
+- `paper3_optionB_results/paper3_optionB_case_summary_20260612.csv`
+- `paper3_optionB_results/paper3_optionB_dataset_summary_20260612.csv`
+- `paper3_optionB_results/paper3_optionB_summary.png`
+- `dt_sync_out_v2/mc_good.csv`
+- `dt_sync_out_v2/mc_fixed.csv`
+- `dt_sync_out_v3_optionB_30seed/deepsense_combined.csv`
+- `dt_sync_out_aerpaw_optionB_30seed/aerpaw_dt_sync_summary.csv`
 
 DeepSense Scenario 23 validation uses real 60 GHz beam-power measurements for
 `q_k` and real GPS trajectories; position measurements are simulated from the
 real trajectory because DeepSense does not provide radar-derived position
-measurements. Across 30 seeds on seq20, seq32, and seq33, the proposed policy
-reduces AoI by 86.3% on average versus event-triggered synchronisation. Seq33
-is a boundary case: AoI improves, but RMSE is 9.7% worse than periodic
-synchronisation, and 125 of 494 beam-power reads were interpolated after local
-file-system timeouts.
+measurements. The strict Option-B runs compare a good upstream filter
+(`adaptive-R + NIS gate`) against a fixed-R upstream filter. With the good
+filter, the proposed synchronizer gives modest accuracy gains because the
+upstream estimate is already clean. With the fixed-R filter, the proposed
+synchronizer reduces RMSE by about 49.4% on average versus periodic
+synchronisation across seq20, seq32, and seq33.
 
 AERPAW validation uses the processed Fortem radar association streams generated
 from the raw AADM dataset. Across 30 seeds on Opt1, Opt2, and Opt3, the
-proposed policy improves RMSE by 8.5% on average versus periodic
-synchronisation while reducing full synchronisations by 67.4%.
+Option-B radar replay compares adaptive-gated and fixed-R radar filters. The
+proposed synchronizer improves RMSE versus periodic synchronisation under both
+filter regimes. Under the good radar filter it also reduces full
+synchronisations by 67.4%; under the fixed-R radar filter it improves RMSE but
+can require more full synchronisations, so AERPAW is reported as an
+accuracy-bandwidth tradeoff rather than a universal win.

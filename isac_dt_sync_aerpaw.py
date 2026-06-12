@@ -64,14 +64,22 @@ def load_aerpaw_stream(path: Path) -> tuple[pd.DataFrame, float]:
     return df, dt
 
 
-def radar_nominal_trace(stream: pd.DataFrame, dt: float, floor_sigma_m: float) -> float:
+def _radar_filter_mode(filter_mode: str) -> str:
+    return "fixed_kf" if filter_mode == "fixed" else "adaptive_r_gate"
+
+
+def radar_nominal_trace(stream: pd.DataFrame, dt: float, floor_sigma_m: float, filter_mode: str) -> float:
     meas = stream[["meas_x", "meas_y", "meas_z"]].to_numpy(float)
     gt_pos = stream[["gt_x", "gt_y", "gt_z"]].to_numpy(float)
     gt_vel = np.gradient(gt_pos, dt, axis=0)
     true_state = np.hstack([gt_pos, gt_vel])
     q = quality_from_sinr(stream["sinr_db"].fillna(stream["sinr_db"].median()).to_numpy(float))
     r_mats = [np.diag([row.r_xx, row.r_yy, row.r_zz]) for row in stream.itertuples()]
-    filt = RadarAdaptiveKalmanFilter(dt=dt, mode="adaptive_r_gate", base_sigma_m=floor_sigma_m)
+    filt = RadarAdaptiveKalmanFilter(
+        dt=dt,
+        mode=_radar_filter_mode(filter_mode),
+        base_sigma_m=floor_sigma_m,
+    )
     traces = []
     for k in range(len(stream)):
         filt.step(meas[k], q[k], r_mats[k], true_state[k])
@@ -89,9 +97,10 @@ def run_one_stream(
     tau_event: float = TAU_EVENT,
     seed: int = 0,
     quality_noise: float = 0.10,
+    filter_mode: str = "good",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     stream, dt = load_aerpaw_stream(csv_path)
-    tr_pnom = radar_nominal_trace(stream, dt, floor_sigma_m)
+    tr_pnom = radar_nominal_trace(stream, dt, floor_sigma_m, filter_mode)
     flight = csv_path.name.split("_v2_")[0]
 
     meas = stream[["meas_x", "meas_y", "meas_z"]].to_numpy(float)
@@ -105,7 +114,8 @@ def run_one_stream(
 
     K_lqr, Q_lqg, R_lqg = build_lqr(dt)
     twins = {m: DigitalTwin(dt) for m in METHODS}
-    filts = {m: RadarAdaptiveKalmanFilter(dt=dt, mode="adaptive_r_gate", base_sigma_m=floor_sigma_m)
+    radar_mode = _radar_filter_mode(filter_mode)
+    filts = {m: RadarAdaptiveKalmanFilter(dt=dt, mode=radar_mode, base_sigma_m=floor_sigma_m)
              for m in METHODS}
     aoi = {m: 0 for m in METHODS}
     hold = {m: 0 for m in METHODS}
@@ -185,6 +195,7 @@ def run_one_stream(
             records.append({
                 "flight": flight,
                 "seed": seed,
+                "filter": filter_mode,
                 "k": k,
                 "t": float(stream["t"].iloc[k]) if "t" in stream else k * dt,
                 "method": m,
@@ -207,6 +218,7 @@ def run_one_stream(
         rows.append({
             "flight": flight,
             "seed": seed,
+            "filter": filter_mode,
             "method": m,
             "rmse_twin": float(np.sqrt(np.mean(sub["twin_err"] ** 2))),
             "mean_aoi": float(sub["aoi"].mean()),
@@ -222,12 +234,13 @@ def run_one_stream(
 
 
 def plot_aerpaw_summary(summary: pd.DataFrame, out_dir: Path) -> None:
-    flights = sorted(summary["flight"].unique())
-    fig, axes = plt.subplots(2, len(flights), figsize=(5 * len(flights), 7.5))
-    if len(flights) == 1:
+    groups = [(flight, filt) for filt in sorted(summary["filter"].unique())
+              for flight in sorted(summary["flight"].unique())]
+    fig, axes = plt.subplots(2, len(groups), figsize=(4.3 * len(groups), 7.5))
+    if len(groups) == 1:
         axes = axes.reshape(2, 1)
-    for col, flight in enumerate(flights):
-        sub = summary[summary["flight"] == flight]
+    for col, (flight, filt) in enumerate(groups):
+        sub = summary[(summary["flight"] == flight) & (summary["filter"] == filt)]
         for row, metric in enumerate(["mean_aoi", "rmse_twin"]):
             ax = axes[row, col]
             vals = [float(sub[sub["method"] == m][metric].iloc[0]) for m in METHODS]
@@ -237,7 +250,7 @@ def plot_aerpaw_summary(summary: pd.DataFrame, out_dir: Path) -> None:
             ax.set_xticklabels([LABELS[m] for m in METHODS], rotation=15, ha="right", fontsize=7)
             ax.set_ylabel("Mean AoI (steps)" if metric == "mean_aoi" else "Twin RMSE (m)")
             if row == 0:
-                ax.set_title(flight, fontweight="bold", fontsize=9)
+                ax.set_title(f"{flight} / {filt}", fontweight="bold", fontsize=8)
             ax.grid(axis="y", alpha=0.2)
             ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
@@ -262,52 +275,58 @@ def main() -> None:
                         help="Monte Carlo seeds for q_k estimation noise")
     parser.add_argument("--quality-noise", type=float, default=0.10,
                         help="Relative sensing-quality estimation noise")
+    parser.add_argument("--filter", default="good", choices=["good", "fixed", "both"],
+                        help="Upstream radar filter mode")
     args = parser.parse_args()
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     all_summary = []
     all_ts = []
+    filter_modes = ["good", "fixed"] if args.filter == "both" else [args.filter]
     for inp in args.inputs:
         path = Path(inp)
-        print(f"Running AERPAW DT sync: {path} ({args.seeds} seeds)")
-        per_flight_summary = []
-        per_flight_ts = []
-        for seed in range(args.seeds):
-            summary, ts = run_one_stream(
-                path,
-                floor_sigma_m=args.floor_sigma_m,
-                tau_low=args.tau_low,
-                tau_high=args.tau_high,
-                seed=seed,
-                quality_noise=args.quality_noise,
-            )
-            per_flight_summary.append(summary)
-            per_flight_ts.append(ts)
-        summary = pd.concat(per_flight_summary, ignore_index=True)
-        ts = pd.concat(per_flight_ts, ignore_index=True)
-        flight = str(summary["flight"].iloc[0])
-        summary.to_csv(out_dir / f"{flight}_dt_sync_summary.csv", index=False)
-        ts.to_csv(out_dir / f"{flight}_dt_sync_timeseries.csv", index=False)
-        all_summary.append(summary)
-        all_ts.append(ts)
-        mean_summary = summary.groupby("method", as_index=False).mean(numeric_only=True)
-        prop = mean_summary[mean_summary["method"] == "proposed"].iloc[0]
-        periodic = mean_summary[mean_summary["method"] == "periodic"].iloc[0]
-        rmse_gain = (periodic.rmse_twin - prop.rmse_twin) / periodic.rmse_twin * 100
-        sync_red = (periodic.sync_count - prop.sync_count) / periodic.sync_count * 100 if periodic.sync_count > 0 else 0.0
-        print(f"  {flight}: RMSE {rmse_gain:.1f}% vs periodic | full-sync {sync_red:.1f}% vs periodic")
+        for filter_mode in filter_modes:
+            print(f"Running AERPAW DT sync: {path} ({filter_mode}, {args.seeds} seeds)")
+            per_flight_summary = []
+            per_flight_ts = []
+            for seed in range(args.seeds):
+                summary, ts = run_one_stream(
+                    path,
+                    floor_sigma_m=args.floor_sigma_m,
+                    tau_low=args.tau_low,
+                    tau_high=args.tau_high,
+                    seed=seed,
+                    quality_noise=args.quality_noise,
+                    filter_mode=filter_mode,
+                )
+                per_flight_summary.append(summary)
+                per_flight_ts.append(ts)
+            summary = pd.concat(per_flight_summary, ignore_index=True)
+            ts = pd.concat(per_flight_ts, ignore_index=True)
+            flight = str(summary["flight"].iloc[0])
+            tag = f"{flight}_{filter_mode}"
+            summary.to_csv(out_dir / f"{tag}_dt_sync_summary.csv", index=False)
+            ts.to_csv(out_dir / f"{tag}_dt_sync_timeseries.csv", index=False)
+            all_summary.append(summary)
+            all_ts.append(ts)
+            mean_summary = summary.groupby("method", as_index=False).mean(numeric_only=True)
+            prop = mean_summary[mean_summary["method"] == "proposed"].iloc[0]
+            periodic = mean_summary[mean_summary["method"] == "periodic"].iloc[0]
+            rmse_gain = (periodic.rmse_twin - prop.rmse_twin) / periodic.rmse_twin * 100
+            sync_red = (periodic.sync_count - prop.sync_count) / periodic.sync_count * 100 if periodic.sync_count > 0 else 0.0
+            print(f"  {flight}/{filter_mode}: RMSE {rmse_gain:.1f}% vs periodic | full-sync {sync_red:.1f}% vs periodic")
 
     combined = pd.concat(all_summary, ignore_index=True)
     combined_ts = pd.concat(all_ts, ignore_index=True)
     combined.to_csv(out_dir / "aerpaw_dt_sync_summary.csv", index=False)
     combined_ts.to_csv(out_dir / "aerpaw_dt_sync_timeseries.csv", index=False)
     plot_aerpaw_summary(
-        combined.groupby(["flight", "method"], as_index=False).mean(numeric_only=True),
+        combined.groupby(["flight", "filter", "method"], as_index=False).mean(numeric_only=True),
         out_dir,
     )
     print("\nCombined summary:")
-    print(combined.groupby(["flight", "method"], as_index=False).mean(numeric_only=True).to_string(index=False))
+    print(combined.groupby(["flight", "filter", "method"], as_index=False).mean(numeric_only=True).to_string(index=False))
     print(f"\nAll outputs -> {out_dir}")
 
 

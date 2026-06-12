@@ -193,13 +193,13 @@ def one_trial_deepsense(
                     action = "SYNC"
                 else:
                     aoi_s[m] += 1; action = "HOLD"
-            else:  # proposed
+            else:  # proposed: low risk -> HOLD, medium -> FUSE, high -> SYNC
                 if Dr <= tau_low:
-                    action = "SYNC"
+                    action = "HOLD"
                 elif Dr <= tau_high:
                     action = "FUSE"
                 else:
-                    action = "HOLD"
+                    action = "SYNC"
                 if action == "HOLD" and hold_s[m] >= MAX_HOLD:
                     action = "FUSE"
                 if action == "SYNC":

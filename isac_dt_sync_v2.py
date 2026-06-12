@@ -229,13 +229,13 @@ def one_trial(seed, filter_mode, tr_Pnom, K_lqr, Ql, Rl,
                     twins[m].sync(xe,Pe); aoi[m]=0; sync_ct[m]+=1; action='SYNC'
                 else:
                     aoi[m]+=1; action='HOLD'
-            else:   # proposed
+            else:   # proposed: low risk -> HOLD, medium -> FUSE, high -> SYNC
                 if Dr<=tau_low:
-                    action='SYNC'
+                    action='HOLD'
                 elif Dr<=tau_high:
                     action='FUSE'
                 else:
-                    action='HOLD'
+                    action='SYNC'
                 # anti-spiral guard
                 if action=='HOLD' and hold_streak[m]>=MAX_HOLD:
                     action='FUSE'
