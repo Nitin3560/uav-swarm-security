@@ -136,7 +136,8 @@ def _resolve_dataset_path(root_csv: Path, value: str) -> Path:
 
 def _load_numeric_file(path: Path) -> np.ndarray:
     try:
-        return np.loadtxt(path, dtype=float)
+        with open(path) as f:
+            return np.asarray([float(x) for x in f.read().split()], dtype=float)
     except Exception as exc:
         raise ValueError(f"Could not read numeric DeepSense file: {path}") from exc
 
