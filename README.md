@@ -147,3 +147,33 @@ reported honestly in the paper discussion.
 Under `H0_NONE`, the trust MPC intentionally returns zero reference correction.
 Any nominal improvement should therefore be attributed to the broader supervisor
 and estimator behavior, not to attack-mode MPC intervention.
+
+## Paper 3: ISAC Digital-Twin Synchronisation
+
+The Paper 3 extension evaluates an integrity-aware digital-twin synchronisation
+policy for ISAC-enabled UAV systems. The synchronisation layer assumes that an
+upstream ISAC estimator exports the triple `(x_hat, P, q)` at each timestep:
+state estimate, covariance, and sensing-quality indicator. The policy then
+chooses among `HOLD`, `FUSE`, and `SYNC` actions to balance twin freshness,
+tracking error, and communication load.
+
+Current real-dataset validation outputs are stored in:
+
+- `paper3_real_dataset_results/paper3_real_dataset_results_20260612_clean.csv`
+- `paper3_real_dataset_results/paper3_real_dataset_summary_clean_20260612.csv`
+- `paper3_real_dataset_results/paper3_real_dataset_results_clean.png`
+- `dt_sync_v3_smoke_seq20_seq32_seq33_means.csv`
+- `dt_sync_aerpaw_summary_means.csv`
+
+DeepSense Scenario 23 validation uses real 60 GHz beam-power measurements for
+`q_k` and real GPS trajectories; position measurements are simulated from the
+real trajectory because DeepSense does not provide radar-derived position
+measurements. Across seq20, seq32, and seq33, the proposed policy reduces AoI
+by 90.4% on average versus event-triggered synchronisation. Seq33 is a boundary
+case: AoI improves, but RMSE is 6.4% worse than periodic synchronisation, and
+125 of 494 beam-power reads were interpolated after local file-system timeouts.
+
+AERPAW validation uses the processed Fortem radar association streams generated
+from the raw AADM dataset. Across Opt1, Opt2, and Opt3, the proposed policy
+improves RMSE by 8.5% on average versus periodic synchronisation while reducing
+full synchronisations by 67.4%.

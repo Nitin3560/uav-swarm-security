@@ -1,0 +1,3 @@
+dataset,cases,mean_rmse_gain_vs_periodic_pct,primary_benefit_metric,mean_primary_benefit_pct,best_case,boundary_case
+AERPAW AADM/Fortem radar,3,8.492294541122758,Full-sync reduction vs periodic (%),67.44097899068659,Opt2,none
+DeepSense Scenario 23,3,-1.5051924100878102,AoI reduction vs event-triggered (%),90.39365345424888,scenario23_seq32,scenario23_seq33

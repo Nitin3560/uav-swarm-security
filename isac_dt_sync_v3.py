@@ -88,6 +88,20 @@ def load_deepsense_seq(
     q_filter : (N,)  q_k + 10% estimation noise (used by filter)
     source   : human-readable description of the quality signal
     """
+    cache_path = csv_path.with_name(f"{csv_path.stem}_v3_cache.csv")
+    if cache_path.exists():
+        cache = pd.read_csv(cache_path)
+        pos = cache[["x", "y", "z"]].to_numpy(float)
+        vel = np.gradient(pos, dt, axis=0)
+        q_true = cache["q_true"].to_numpy(float)
+        rng = np.random.default_rng(seed + 3000)
+        q_filter = np.clip(
+            q_true * (1.0 + rng.normal(0.0, quality_noise, len(q_true))),
+            MIN_QUALITY,
+            1.0,
+        )
+        return pos, vel, q_true, q_filter, f"cached DeepSense real beam-power quality ({cache_path.name})"
+
     # Real trajectory from GPS
     time_s, pos_3d = load_deepsense_trajectory(csv_path, dt)
     n = len(time_s)

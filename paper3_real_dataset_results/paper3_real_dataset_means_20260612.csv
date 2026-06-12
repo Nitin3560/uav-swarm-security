@@ -1,0 +1,3 @@
+dataset,cases,mean_rmse_gain_vs_periodic_pct,mean_aoi_reduction_vs_event_pct,mean_sync_reduction_vs_periodic_pct,mean_proposed_fuses
+AERPAW AADM/Fortem radar,3,8.492294541122758,-4552.427143696991,67.44097899068659,880.3333333333334
+DeepSense Scenario 23,3,-1.5051924100878102,90.39365345424888,-164.20328263646232,20.444444444444443
